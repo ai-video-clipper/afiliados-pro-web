@@ -26,6 +26,24 @@ type MercadoLivreApiItem = {
   }>;
 };
 
+type MercadoLivreApiProduct = {
+  id?: string;
+  name?: string;
+  title?: string;
+  pictures?: Array<{
+    url?: string;
+    secure_url?: string;
+  }>;
+  buy_box_winner?: {
+    item_id?: string;
+    id?: string;
+    price?: number | string | null;
+    original_price?: number | string | null;
+    regular_amount?: number | string | null;
+    permalink?: string;
+  } | null;
+};
+
 function normalizeUrl(value: string) {
   const trimmed = value.trim();
 
@@ -99,47 +117,116 @@ function fixImageUrl(value: string | undefined | null) {
   return value;
 }
 
-function extractItemIdFromText(value: string) {
-  const normalized = value.replace(/%2F/gi, "/");
+function extractItemIdFromText(value: string | null | undefined) {
+  if (!value) return "";
 
-  const pathMatch =
-    normalized.match(/\/(MLB)-?(\d{6,})/i) ||
-    normalized.match(/\/(MLB)(\d{6,})/i);
+  const decoded = decodeURIComponent(String(value)).replace(/%2F/gi, "/");
 
-  if (pathMatch) {
-    return `MLB${pathMatch[2]}`;
+  const itemIdMatch =
+    decoded.match(/item_id[:=](MLB\d{6,})/i) ||
+    decoded.match(/\b(MLB\d{9,})\b/i) ||
+    decoded.match(/\bMLB-?(\d{9,})\b/i);
+
+  if (!itemIdMatch) return "";
+
+  if (itemIdMatch[1]?.startsWith("MLB")) {
+    return itemIdMatch[1].toUpperCase();
   }
 
-  const genericMatch =
-    normalized.match(/\b(MLB)-?(\d{6,})\b/i) ||
-    normalized.match(/\b(MLB)(\d{6,})\b/i);
+  return `MLB${itemIdMatch[1]}`;
+}
 
-  if (genericMatch) {
-    return `MLB${genericMatch[2]}`;
+function extractItemIdFromPath(pathname: string) {
+  if (/\/p\/MLB\d+/i.test(pathname)) {
+    return "";
+  }
+
+  const pathMatch =
+    pathname.match(/\/(MLB)-?(\d{6,})(?:-|\/|$)/i) ||
+    pathname.match(/\/(MLB)(\d{6,})(?:-|\/|$)/i);
+
+  if (!pathMatch) return "";
+
+  return `MLB${pathMatch[2]}`;
+}
+
+function extractItemIdFromSearchParams(searchParams: URLSearchParams) {
+  const directCandidates = [
+    searchParams.get("item_id"),
+    searchParams.get("wid"),
+    searchParams.get("pdp_filters"),
+  ];
+
+  for (const candidate of directCandidates) {
+    const itemId = extractItemIdFromText(candidate);
+
+    if (itemId) return itemId;
+  }
+
+  for (const [key, value] of searchParams.entries()) {
+    const itemIdFromKey = extractItemIdFromText(key);
+    const itemIdFromValue = extractItemIdFromText(value);
+
+    if (itemIdFromKey) return itemIdFromKey;
+    if (itemIdFromValue) return itemIdFromValue;
   }
 
   return "";
+}
+
+function extractItemIdFromHash(hash: string) {
+  if (!hash) return "";
+
+  const rawHash = hash.startsWith("#") ? hash.slice(1) : hash;
+
+  const fromText = extractItemIdFromText(rawHash);
+
+  if (fromText) return fromText;
+
+  try {
+    const params = new URLSearchParams(rawHash);
+    return extractItemIdFromSearchParams(params);
+  } catch {
+    return "";
+  }
 }
 
 function extractItemIdFromUrl(rawUrl: string) {
   try {
     const url = new URL(normalizeUrl(rawUrl));
 
-    const fromPath = extractItemIdFromText(url.pathname);
+    const fromSearch = extractItemIdFromSearchParams(url.searchParams);
+
+    if (fromSearch) return fromSearch;
+
+    const fromHash = extractItemIdFromHash(url.hash);
+
+    if (fromHash) return fromHash;
+
+    const fromPath = extractItemIdFromPath(url.pathname);
 
     if (fromPath) return fromPath;
 
-    const wid = url.searchParams.get("wid");
-
-    if (wid) {
-      const fromWid = extractItemIdFromText(wid);
-
-      if (fromWid) return fromWid;
-    }
-
-    return extractItemIdFromText(rawUrl);
+    return "";
   } catch {
     return extractItemIdFromText(rawUrl);
+  }
+}
+
+function extractCatalogProductIdFromUrl(rawUrl: string) {
+  try {
+    const url = new URL(normalizeUrl(rawUrl));
+
+    const pathMatch = url.pathname.match(/\/p\/(MLB\d{6,})/i);
+
+    if (pathMatch) {
+      return pathMatch[1].toUpperCase();
+    }
+
+    return "";
+  } catch {
+    const match = rawUrl.match(/\/p\/(MLB\d{6,})/i);
+    return match ? match[1].toUpperCase() : "";
   }
 }
 
@@ -197,6 +284,65 @@ async function fetchMercadoLivreApi(itemId: string) {
     old_price: formatBRL(oldPrice),
     image_url: imageUrl,
     original_url: item.permalink || "",
+  };
+}
+
+async function fetchMercadoLivreProductApi(productId: string) {
+  if (!productId) return null;
+
+  const response = await fetch(
+    `https://api.mercadolibre.com/products/${productId}`,
+    {
+      headers: {
+        Accept: "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+      },
+      cache: "no-store",
+    }
+  );
+
+  if (!response.ok) return null;
+
+  const product = (await response.json()) as MercadoLivreApiProduct;
+
+  const buyBoxItemId = extractItemIdFromText(
+    product.buy_box_winner?.item_id || product.buy_box_winner?.id || ""
+  );
+
+  if (buyBoxItemId) {
+    const itemData = await fetchMercadoLivreApi(buyBoxItemId);
+
+    if (itemData) return itemData;
+  }
+
+  const currentPrice = parseMoney(product.buy_box_winner?.price);
+  const originalPrice =
+    parseMoney(product.buy_box_winner?.original_price) ||
+    parseMoney(product.buy_box_winner?.regular_amount);
+
+  let oldPrice: number | null = null;
+
+  if (originalPrice && currentPrice && originalPrice > currentPrice) {
+    oldPrice = originalPrice;
+  }
+
+  const imageUrl =
+    fixImageUrl(product.pictures?.[0]?.secure_url) ||
+    fixImageUrl(product.pictures?.[0]?.url);
+
+  const title = cleanText(product.name || product.title);
+
+  if (!title && !currentPrice && !imageUrl) {
+    return null;
+  }
+
+  return {
+    title: title || "Produto Mercado Livre",
+    price: formatBRL(currentPrice),
+    old_price: formatBRL(oldPrice),
+    image_url: imageUrl,
+    original_url: product.buy_box_winner?.permalink || "",
   };
 }
 
@@ -298,13 +444,15 @@ function findPriceFromJsonLd($: cheerio.CheerioAPI) {
 
   for (const product of products) {
     const productObject = product as {
-      offers?: {
-        price?: string | number;
-        lowPrice?: string | number;
-      } | Array<{
-        price?: string | number;
-        lowPrice?: string | number;
-      }>;
+      offers?:
+        | {
+            price?: string | number;
+            lowPrice?: string | number;
+          }
+        | Array<{
+            price?: string | number;
+            lowPrice?: string | number;
+          }>;
     };
 
     const offers = Array.isArray(productObject.offers)
@@ -431,15 +579,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const itemId = extractItemIdFromUrl(url);
+    const itemIdFromOriginal = extractItemIdFromUrl(url);
 
-    if (itemId) {
-      const apiData = await fetchMercadoLivreApi(itemId);
+    if (itemIdFromOriginal) {
+      const apiData = await fetchMercadoLivreApi(itemIdFromOriginal);
 
       if (apiData) {
         return NextResponse.json({
           ok: true,
-          source: "api",
+          source: "item_api_original",
           data: {
             ...apiData,
             original_url: apiData.original_url || url,
@@ -448,7 +596,69 @@ export async function POST(request: Request) {
       }
     }
 
+    const catalogProductIdFromOriginal = extractCatalogProductIdFromUrl(url);
+
+    if (catalogProductIdFromOriginal) {
+      const productData = await fetchMercadoLivreProductApi(
+        catalogProductIdFromOriginal
+      );
+
+      if (productData) {
+        return NextResponse.json({
+          ok: true,
+          source: "product_api_original",
+          data: {
+            ...productData,
+            original_url: productData.original_url || url,
+          },
+        });
+      }
+    }
+
     const htmlData = await fetchMercadoLivreHtml(url);
+
+    if (htmlData?.original_url) {
+      const itemIdFromResolved = extractItemIdFromUrl(htmlData.original_url);
+
+      if (itemIdFromResolved && itemIdFromResolved !== itemIdFromOriginal) {
+        const apiData = await fetchMercadoLivreApi(itemIdFromResolved);
+
+        if (apiData) {
+          return NextResponse.json({
+            ok: true,
+            source: "item_api_resolved",
+            data: {
+              ...apiData,
+              original_url: apiData.original_url || htmlData.original_url,
+            },
+          });
+        }
+      }
+
+      const catalogProductIdFromResolved = extractCatalogProductIdFromUrl(
+        htmlData.original_url
+      );
+
+      if (
+        catalogProductIdFromResolved &&
+        catalogProductIdFromResolved !== catalogProductIdFromOriginal
+      ) {
+        const productData = await fetchMercadoLivreProductApi(
+          catalogProductIdFromResolved
+        );
+
+        if (productData) {
+          return NextResponse.json({
+            ok: true,
+            source: "product_api_resolved",
+            data: {
+              ...productData,
+              original_url: productData.original_url || htmlData.original_url,
+            },
+          });
+        }
+      }
+    }
 
     if (htmlData) {
       return NextResponse.json({
