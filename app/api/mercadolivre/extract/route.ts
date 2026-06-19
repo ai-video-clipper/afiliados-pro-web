@@ -66,11 +66,21 @@ function normalizeUrl(value: string) {
 }
 
 function safeDecode(value: string) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
+  let result = value;
+
+  for (let i = 0; i < 3; i++) {
+    try {
+      const decoded = decodeURIComponent(result);
+
+      if (decoded === result) break;
+
+      result = decoded;
+    } catch {
+      break;
+    }
   }
+
+  return result;
 }
 
 function cleanText(value: string | undefined | null) {
@@ -136,16 +146,6 @@ function fixImageUrl(value: string | undefined | null) {
   return value;
 }
 
-function isUsefulTitle(value: string) {
-  const title = cleanText(value);
-
-  if (!title) return false;
-  if (title.toLowerCase() === "produto mercado livre") return false;
-  if (title.toLowerCase() === "mercado livre") return false;
-
-  return true;
-}
-
 function normalizeOldPrice(oldPrice: number | null, currentPrice: number | null) {
   if (!oldPrice) return null;
   if (currentPrice && oldPrice <= currentPrice) return null;
@@ -153,130 +153,101 @@ function normalizeOldPrice(oldPrice: number | null, currentPrice: number | null)
   return oldPrice;
 }
 
+function isUsefulTitle(value: string) {
+  const title = cleanText(value).toLowerCase();
+
+  if (!title) return false;
+  if (title === "produto mercado livre") return false;
+  if (title === "mercado livre") return false;
+
+  return true;
+}
+
 function extractItemIdFromText(value: string | null | undefined) {
   if (!value) return "";
 
-  const decoded = safeDecode(String(value)).replace(/%2F/gi, "/");
+  const decoded = safeDecode(String(value));
 
-  const patterns = [
+  const fullPatterns = [
+    /pdp_filters=[^#&]*?item_id[:=](MLB\d{6,})/i,
     /item_id[:=](MLB\d{6,})/i,
-    /item_id%3A(MLB\d{6,})/i,
     /wid[:=](MLB\d{6,})/i,
     /"item_id"\s*:\s*"(MLB\d{6,})"/i,
     /"itemId"\s*:\s*"(MLB\d{6,})"/i,
     /\b(MLB\d{9,})\b/i,
-    /\bMLB-?(\d{9,})\b/i,
   ];
 
-  for (const pattern of patterns) {
+  for (const pattern of fullPatterns) {
     const match = decoded.match(pattern);
 
     if (match?.[1]) {
-      const valueFound = match[1].toUpperCase();
+      return match[1].toUpperCase();
+    }
+  }
 
-      if (valueFound.startsWith("MLB")) {
-        return valueFound;
-      }
+  const digitPatterns = [
+    /\/MLB-?(\d{9,})(?:-|\/|$)/i,
+    /\bMLB-?(\d{9,})\b/i,
+  ];
 
-      return `MLB${valueFound}`;
+  for (const pattern of digitPatterns) {
+    const match = decoded.match(pattern);
+
+    if (match?.[1]) {
+      return `MLB${match[1]}`;
     }
   }
 
   return "";
-}
-
-function extractItemIdFromPath(pathname: string) {
-  if (/\/p\/MLB\d+/i.test(pathname)) {
-    return "";
-  }
-
-  const pathMatch =
-    pathname.match(/\/(MLB)-?(\d{9,})(?:-|\/|$)/i) ||
-    pathname.match(/\/(MLB)(\d{9,})(?:-|\/|$)/i);
-
-  if (!pathMatch) return "";
-
-  return `MLB${pathMatch[2]}`;
-}
-
-function extractItemIdFromSearchParams(searchParams: URLSearchParams) {
-  const priorityCandidates = [
-    searchParams.get("pdp_filters"),
-    searchParams.get("item_id"),
-    searchParams.get("wid"),
-  ];
-
-  for (const candidate of priorityCandidates) {
-    const itemId = extractItemIdFromText(candidate);
-
-    if (itemId) return itemId;
-  }
-
-  for (const [key, value] of searchParams.entries()) {
-    const itemIdFromKey = extractItemIdFromText(key);
-    const itemIdFromValue = extractItemIdFromText(value);
-
-    if (itemIdFromKey) return itemIdFromKey;
-    if (itemIdFromValue) return itemIdFromValue;
-  }
-
-  return "";
-}
-
-function extractItemIdFromHash(hash: string) {
-  if (!hash) return "";
-
-  const rawHash = hash.startsWith("#") ? hash.slice(1) : hash;
-  const decodedHash = safeDecode(rawHash);
-
-  const fromText = extractItemIdFromText(decodedHash);
-
-  if (fromText) return fromText;
-
-  try {
-    const params = new URLSearchParams(decodedHash);
-    return extractItemIdFromSearchParams(params);
-  } catch {
-    return "";
-  }
 }
 
 function extractItemIdFromUrl(rawUrl: string) {
+  const fromRaw = extractItemIdFromText(rawUrl);
+
+  if (fromRaw) return fromRaw;
+
   try {
     const url = new URL(normalizeUrl(rawUrl));
 
-    const fromSearch = extractItemIdFromSearchParams(url.searchParams);
+    const priorityParams = [
+      url.searchParams.get("pdp_filters"),
+      url.searchParams.get("item_id"),
+      url.searchParams.get("wid"),
+    ];
 
-    if (fromSearch) return fromSearch;
+    for (const param of priorityParams) {
+      const itemId = extractItemIdFromText(param);
 
-    const fromHash = extractItemIdFromHash(url.hash);
+      if (itemId) return itemId;
+    }
 
-    if (fromHash) return fromHash;
+    for (const [key, value] of url.searchParams.entries()) {
+      const fromKey = extractItemIdFromText(key);
+      const fromValue = extractItemIdFromText(value);
 
-    const fromPath = extractItemIdFromPath(url.pathname);
+      if (fromKey) return fromKey;
+      if (fromValue) return fromValue;
+    }
 
-    if (fromPath) return fromPath;
+    if (url.hash) {
+      const fromHash = extractItemIdFromText(url.hash);
 
-    return extractItemIdFromText(rawUrl);
-  } catch {
-    return extractItemIdFromText(rawUrl);
-  }
-}
-
-function extractCatalogProductIdFromUrl(rawUrl: string) {
-  try {
-    const url = new URL(normalizeUrl(rawUrl));
-    const pathMatch = url.pathname.match(/\/p\/(MLB\d{6,})/i);
-
-    if (pathMatch) {
-      return pathMatch[1].toUpperCase();
+      if (fromHash) return fromHash;
     }
 
     return "";
   } catch {
-    const match = rawUrl.match(/\/p\/(MLB\d{6,})/i);
-    return match ? match[1].toUpperCase() : "";
+    return "";
   }
+}
+
+function extractCatalogProductIdFromText(value: string | null | undefined) {
+  if (!value) return "";
+
+  const decoded = safeDecode(String(value));
+  const match = decoded.match(/\/p\/(MLB\d{6,})/i);
+
+  return match?.[1] ? match[1].toUpperCase() : "";
 }
 
 function getMeta($: cheerio.CheerioAPI, names: string[]) {
@@ -339,78 +310,63 @@ function findImage($: cheerio.CheerioAPI) {
   return fixImageUrl(image);
 }
 
-function findJsonLdProducts($: cheerio.CheerioAPI) {
-  const products: unknown[] = [];
-
-  function scan(value: unknown) {
-    if (!value) return;
-
-    if (Array.isArray(value)) {
-      value.forEach(scan);
-      return;
-    }
-
-    if (typeof value === "object") {
-      const objectValue = value as Record<string, unknown>;
-      const type = objectValue["@type"];
-
-      if (
-        type === "Product" ||
-        (Array.isArray(type) && type.includes("Product"))
-      ) {
-        products.push(value);
-      }
-
-      Object.values(objectValue).forEach(scan);
-    }
-  }
+function findPriceFromJsonLd($: cheerio.CheerioAPI) {
+  let found: number | null = null;
 
   $('script[type="application/ld+json"]').each((_, element) => {
+    if (found) return;
+
     const text = $(element).contents().text().trim();
 
     if (!text) return;
 
     try {
-      scan(JSON.parse(text));
+      const json = JSON.parse(text);
+
+      function scan(value: unknown) {
+        if (found || !value) return;
+
+        if (Array.isArray(value)) {
+          value.forEach(scan);
+          return;
+        }
+
+        if (typeof value !== "object") return;
+
+        const objectValue = value as Record<string, unknown>;
+        const type = objectValue["@type"];
+
+        if (
+          type === "Product" ||
+          (Array.isArray(type) && type.includes("Product"))
+        ) {
+          const offers = Array.isArray(objectValue.offers)
+            ? objectValue.offers[0]
+            : objectValue.offers;
+
+          if (offers && typeof offers === "object") {
+            const offerObject = offers as Record<string, unknown>;
+
+            found = parseMoney(
+              (offerObject.price as string | number | undefined) ||
+                (offerObject.lowPrice as string | number | undefined)
+            );
+          }
+        }
+
+        Object.values(objectValue).forEach(scan);
+      }
+
+      scan(json);
     } catch {
       // ignora JSON inválido
     }
   });
 
-  return products;
+  return found;
 }
 
-function findPriceFromJsonLd($: cheerio.CheerioAPI) {
-  const products = findJsonLdProducts($);
-
-  for (const product of products) {
-    const productObject = product as {
-      offers?:
-        | {
-            price?: string | number;
-            lowPrice?: string | number;
-          }
-        | Array<{
-            price?: string | number;
-            lowPrice?: string | number;
-          }>;
-    };
-
-    const offers = Array.isArray(productObject.offers)
-      ? productObject.offers[0]
-      : productObject.offers;
-
-    const price = parseMoney(offers?.price || offers?.lowPrice);
-
-    if (price) return price;
-  }
-
-  return null;
-}
-
-function findNumbersAroundKeys(html: string, keys: string[]) {
-  const values: number[] = [];
-
+function findNumberByKeys(html: string, keys: string[]) {
   for (const key of keys) {
     const patterns = [
       new RegExp(
@@ -418,58 +374,22 @@ function findNumbersAroundKeys(html: string, keys: string[]) {
         "gi"
       ),
       new RegExp(
-        `"${key}"\\s*:\\s*\\{[^}]{0,200}"amount"\\s*:\\s*"?([0-9]+(?:[\\.,][0-9]+)?)"?`,
+        `"${key}"\\s*:\\s*\\{[^}]{0,250}"amount"\\s*:\\s*"?([0-9]+(?:[\\.,][0-9]+)?)"?`,
         "gi"
       ),
     ];
 
-    for (const regex of patterns) {
-      const matches = [...html.matchAll(regex)];
+    for (const pattern of patterns) {
+      const matches = [...html.matchAll(pattern)];
 
       for (const match of matches) {
         const value = parseMoney(match[1]);
 
         if (value && value > 1 && value < 500000) {
-          values.push(value);
+          return value;
         }
       }
     }
-  }
-
-  return values;
-}
-
-function findPriceFromEmbeddedJson(html: string) {
-  const values = findNumbersAroundKeys(html, [
-    "price",
-    "current_price",
-    "sale_price",
-    "amount",
-  ]);
-
-  if (values.length === 0) return null;
-
-  const filtered = values.filter((value) => value > 5);
-
-  if (filtered.length === 0) return null;
-
-  return filtered[0];
-}
-
-function findOldPriceFromEmbeddedJson(html: string, currentPrice: number | null) {
-  const values = findNumbersAroundKeys(html, [
-    "original_price",
-    "previous_price",
-    "regular_price",
-    "list_price",
-    "base_price",
-    "strike_through_price",
-  ]);
-
-  for (const value of values) {
-    const oldPrice = normalizeOldPrice(value, currentPrice);
-
-    if (oldPrice) return oldPrice;
   }
 
   return null;
@@ -488,11 +408,16 @@ function findPrice($: cheerio.CheerioAPI, html: string) {
 
   if (metaPrice) return metaPrice;
 
-  const jsonLdPrice = findPriceFromJsonLd($);
+  const jsonPrice = findPriceFromJsonLd($);
 
-  if (jsonLdPrice) return jsonLdPrice;
+  if (jsonPrice) return jsonPrice;
 
-  return findPriceFromEmbeddedJson(html);
+  return findNumberByKeys(html, [
+    "current_price",
+    "sale_price",
+    "price",
+    "amount",
+  ]);
 }
 
 function findOldPrice(
@@ -509,7 +434,16 @@ function findOldPrice(
 
   if (oldFromSelector) return oldFromSelector;
 
-  return findOldPriceFromEmbeddedJson(html, currentPrice);
+  const scriptOldPrice = findNumberByKeys(html, [
+    "original_price",
+    "previous_price",
+    "regular_price",
+    "list_price",
+    "base_price",
+    "strike_through_price",
+  ]);
+
+  return normalizeOldPrice(scriptOldPrice, currentPrice);
 }
 
 async function fetchHtmlData(url: string) {
@@ -525,9 +459,7 @@ async function fetchHtmlData(url: string) {
     cache: "no-store",
   });
 
-  if (!response.ok) {
-    return null;
-  }
+  if (!response.ok) return null;
 
   const html = await response.text();
   const $ = cheerio.load(html);
@@ -537,13 +469,6 @@ async function fetchHtmlData(url: string) {
   const currentPrice = findPrice($, html);
   const oldPrice = findOldPrice($, html, currentPrice);
   const originalUrl = response.url || url;
-
-  const itemIdFromHtml =
-    extractItemIdFromUrl(originalUrl) || extractItemIdFromText(html);
-
-  const catalogProductIdFromHtml =
-    extractCatalogProductIdFromUrl(originalUrl) ||
-    extractCatalogProductIdFromUrl(html);
 
   return {
     data: {
@@ -556,8 +481,6 @@ async function fetchHtmlData(url: string) {
     } as RawProductData,
     html,
     resolvedUrl: originalUrl,
-    itemIdFromHtml,
-    catalogProductIdFromHtml,
   };
 }
 
@@ -577,25 +500,19 @@ async function fetchItemApiData(itemId: string) {
 
   const item = (await response.json()) as MercadoLivreApiItem;
 
-  const priceFromSale = parseMoney(item.sale_price?.amount);
+  const currentPrice =
+    parseMoney(item.sale_price?.amount) ||
+    parseMoney(item.price) ||
+    parseMoney(item.variations?.[0]?.price);
+
   const regularFromSale = parseMoney(item.sale_price?.regular_amount);
-  const priceFromItem = parseMoney(item.price);
-  const priceFromVariation = parseMoney(item.variations?.[0]?.price);
-
-  const currentPrice = priceFromSale || priceFromItem || priceFromVariation;
-
   const originalPrice = parseMoney(item.original_price);
   const basePrice = parseMoney(item.base_price);
 
-  let oldPrice: number | null = null;
-
-  if (regularFromSale && currentPrice && regularFromSale > currentPrice) {
-    oldPrice = regularFromSale;
-  } else if (originalPrice && currentPrice && originalPrice > currentPrice) {
-    oldPrice = originalPrice;
-  } else if (basePrice && currentPrice && basePrice > currentPrice) {
-    oldPrice = basePrice;
-  }
+  const oldPrice =
+    normalizeOldPrice(regularFromSale, currentPrice) ||
+    normalizeOldPrice(originalPrice, currentPrice) ||
+    normalizeOldPrice(basePrice, currentPrice);
 
   const imageUrl =
     fixImageUrl(item.pictures?.[0]?.secure_url) ||
@@ -605,9 +522,7 @@ async function fetchItemApiData(itemId: string) {
 
   const title = cleanText(item.title);
 
-  if (!title && !currentPrice && !imageUrl) {
-    return null;
-  }
+  if (!title && !currentPrice && !imageUrl) return null;
 
   return {
     title: title || "Produto Mercado Livre",
@@ -649,11 +564,12 @@ async function fetchProductApiData(productId: string) {
   }
 
   const currentPrice = parseMoney(product.buy_box_winner?.price);
-  const originalPrice =
-    parseMoney(product.buy_box_winner?.original_price) ||
-    parseMoney(product.buy_box_winner?.regular_amount);
 
-  const oldPrice = normalizeOldPrice(originalPrice, currentPrice);
+  const oldPrice = normalizeOldPrice(
+    parseMoney(product.buy_box_winner?.original_price) ||
+      parseMoney(product.buy_box_winner?.regular_amount),
+    currentPrice
+  );
 
   const imageUrl =
     fixImageUrl(product.pictures?.[0]?.secure_url) ||
@@ -661,9 +577,7 @@ async function fetchProductApiData(productId: string) {
 
   const title = cleanText(product.name || product.title);
 
-  if (!title && !currentPrice && !imageUrl) {
-    return null;
-  }
+  if (!title && !currentPrice && !imageUrl) return null;
 
   return {
     title: title || "Produto Mercado Livre",
@@ -708,9 +622,7 @@ function mergeData(
     .filter(Boolean)
     .join("+");
 
-  if (!title && !currentPrice && !imageUrl) {
-    return null;
-  }
+  if (!title && !currentPrice && !imageUrl) return null;
 
   return {
     title,
@@ -734,28 +646,72 @@ export async function POST(request: Request) {
       );
     }
 
-    const itemIdFromOriginal = extractItemIdFromUrl(url);
-    const catalogProductIdFromOriginal = extractCatalogProductIdFromUrl(url);
+    const rawItemId = extractItemIdFromUrl(url);
+    const rawCatalogId = extractCatalogProductIdFromText(url);
+
+    if (rawItemId) {
+      const itemApiData = await fetchItemApiData(rawItemId);
+
+      if (itemApiData) {
+        return NextResponse.json({
+          ok: true,
+          data: {
+            title: itemApiData.title,
+            price: formatBRL(itemApiData.currentPrice),
+            old_price: formatBRL(itemApiData.oldPrice),
+            image_url: itemApiData.imageUrl,
+            original_url: itemApiData.originalUrl || url,
+            source: "item_api_raw",
+          },
+          debug: {
+            raw_item_id: rawItemId,
+            raw_catalog_id: rawCatalogId,
+          },
+        });
+      }
+    }
+
+    if (rawCatalogId) {
+      const productApiData = await fetchProductApiData(rawCatalogId);
+
+      if (productApiData) {
+        return NextResponse.json({
+          ok: true,
+          data: {
+            title: productApiData.title,
+            price: formatBRL(productApiData.currentPrice),
+            old_price: formatBRL(productApiData.oldPrice),
+            image_url: productApiData.imageUrl,
+            original_url: productApiData.originalUrl || url,
+            source: "product_api_raw",
+          },
+          debug: {
+            raw_item_id: rawItemId,
+            raw_catalog_id: rawCatalogId,
+          },
+        });
+      }
+    }
 
     const htmlResult = await fetchHtmlData(url);
 
     const resolvedUrl = htmlResult?.resolvedUrl || url;
 
-    const itemId =
-      itemIdFromOriginal ||
-      htmlResult?.itemIdFromHtml ||
-      extractItemIdFromUrl(resolvedUrl);
+    const resolvedItemId =
+      extractItemIdFromUrl(resolvedUrl) ||
+      extractItemIdFromText(htmlResult?.html || "");
 
-    const catalogProductId =
-      catalogProductIdFromOriginal ||
-      htmlResult?.catalogProductIdFromHtml ||
-      extractCatalogProductIdFromUrl(resolvedUrl);
+    const resolvedCatalogId =
+      extractCatalogProductIdFromText(resolvedUrl) ||
+      extractCatalogProductIdFromText(htmlResult?.html || "");
 
-    const itemApiData = itemId ? await fetchItemApiData(itemId) : null;
+    const itemApiData = resolvedItemId
+      ? await fetchItemApiData(resolvedItemId)
+      : null;
 
     const productApiData =
-      !itemApiData && catalogProductId
-        ? await fetchProductApiData(catalogProductId)
+      !itemApiData && resolvedCatalogId
+        ? await fetchProductApiData(resolvedCatalogId)
         : null;
 
     const merged = mergeData(
@@ -770,8 +726,10 @@ export async function POST(request: Request) {
         ok: true,
         data: merged,
         debug: {
-          item_id: itemId,
-          catalog_product_id: catalogProductId,
+          raw_item_id: rawItemId,
+          raw_catalog_id: rawCatalogId,
+          resolved_item_id: resolvedItemId,
+          resolved_catalog_id: resolvedCatalogId,
           resolved_url: resolvedUrl,
           source: merged.source,
         },
@@ -781,13 +739,13 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        error:
-          "Não foi possível encontrar dados desse produto. Tente usar o link curto meli.la ou um link direto do produto.",
-        debug: {
-          item_id: itemId,
-          catalog_product_id: catalogProductId,
-          resolved_url: resolvedUrl,
-        },
+        error: `Não foi possível encontrar dados. Diagnóstico: raw_item_id=${
+          rawItemId || "não encontrado"
+        }, raw_catalog_id=${
+          rawCatalogId || "não encontrado"
+        }, resolved_item_id=${
+          resolvedItemId || "não encontrado"
+        }, resolved_catalog_id=${resolvedCatalogId || "não encontrado"}.`,
       },
       { status: 400 }
     );
