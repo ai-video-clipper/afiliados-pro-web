@@ -103,6 +103,7 @@ export default function ProdutosPage() {
   const [store, setStore] = useState("manual");
 
   const [message, setMessage] = useState("Carregando...");
+  const [extracting, setExtracting] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -205,6 +206,54 @@ export default function ProdutosPage() {
     }
 
     throw new Error("Não foi possível gerar o link curto. Tente novamente.");
+  }
+
+  async function extractMercadoLivreData() {
+    if (!offerLink.trim()) {
+      setMessage("Cole o link do Mercado Livre primeiro.");
+      return;
+    }
+
+    try {
+      setExtracting(true);
+      setMessage("Buscando dados no Mercado Livre...");
+
+      const response = await fetch("/api/mercadolivre/extract", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: offerLink.trim(),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!result.ok) {
+        setMessage(result.error || "Não foi possível buscar os dados.");
+        return;
+      }
+
+      const data = result.data;
+
+      setStore("mercado_livre");
+
+      if (data.title) setTitle(data.title);
+      if (data.price) setPrice(data.price);
+      if (data.old_price) setOldPrice(data.old_price);
+      if (data.image_url) setImageUrl(data.image_url);
+      if (data.original_url) setOfferLink(data.original_url);
+
+      setMessage("Dados encontrados. Confira e salve o produto.");
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido.";
+
+      setMessage(`Erro ao buscar dados: ${errorMessage}`);
+    } finally {
+      setExtracting(false);
+    }
   }
 
   async function addProduct() {
@@ -392,7 +441,8 @@ export default function ProdutosPage() {
         <h1 className="text-3xl font-bold">Produtos</h1>
 
         <p className="mt-2 text-slate-300">
-          Cadastre uma oferta e envie para o Telegram.
+          Cadastre uma oferta, busque dados do Mercado Livre e envie para o
+          Telegram.
         </p>
 
         <div className="mt-8 grid gap-4 md:grid-cols-2">
@@ -438,12 +488,24 @@ export default function ProdutosPage() {
             className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-blue-500"
           />
 
-          <input
-            value={offerLink}
-            onChange={(event) => setOfferLink(event.target.value)}
-            placeholder="Link da oferta"
-            className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-blue-500"
-          />
+          <div className="md:col-span-2">
+            <div className="flex flex-col gap-3 md:flex-row">
+              <input
+                value={offerLink}
+                onChange={(event) => setOfferLink(event.target.value)}
+                placeholder="Link da oferta"
+                className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-blue-500"
+              />
+
+              <button
+                onClick={extractMercadoLivreData}
+                disabled={extracting}
+                className="rounded-xl bg-yellow-500 px-5 py-3 font-semibold text-slate-950 hover:bg-yellow-400 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {extracting ? "Buscando..." : "Buscar dados ML"}
+              </button>
+            </div>
+          </div>
 
           <input
             value={imageUrl}
@@ -455,8 +517,9 @@ export default function ProdutosPage() {
 
         {store === "mercado_livre" && (
           <div className="mt-4 rounded-xl border border-blue-900 bg-blue-950/40 p-4 text-sm text-blue-100">
-            Mercado Livre ativo: o sistema vai aplicar sua tag, limpar o link e
-            gerar um link curto no formato <strong>/m/CODIGO</strong>.
+            Mercado Livre ativo: o sistema busca nome, preço, preço antigo
+            quando existir, imagem, aplica sua tag, limpa o link e gera um link
+            curto no formato <strong>/m/CODIGO</strong>.
           </div>
         )}
 
