@@ -4,6 +4,28 @@ import * as cheerio from "cheerio";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type MercadoLivreApiItem = {
+  id?: string;
+  title?: string;
+  price?: number | string | null;
+  base_price?: number | string | null;
+  original_price?: number | string | null;
+  permalink?: string;
+  thumbnail?: string;
+  secure_thumbnail?: string;
+  pictures?: Array<{
+    url?: string;
+    secure_url?: string;
+  }>;
+  sale_price?: {
+    amount?: number | string | null;
+    regular_amount?: number | string | null;
+  } | null;
+  variations?: Array<{
+    price?: number | string | null;
+  }>;
+};
+
 function normalizeUrl(value: string) {
   const trimmed = value.trim();
 
@@ -67,6 +89,117 @@ function formatBRL(value: number | null) {
   }).format(value);
 }
 
+function fixImageUrl(value: string | undefined | null) {
+  if (!value) return "";
+
+  if (value.startsWith("http://")) {
+    return value.replace("http://", "https://");
+  }
+
+  return value;
+}
+
+function extractItemIdFromText(value: string) {
+  const normalized = value.replace(/%2F/gi, "/");
+
+  const pathMatch =
+    normalized.match(/\/(MLB)-?(\d{6,})/i) ||
+    normalized.match(/\/(MLB)(\d{6,})/i);
+
+  if (pathMatch) {
+    return `MLB${pathMatch[2]}`;
+  }
+
+  const genericMatch =
+    normalized.match(/\b(MLB)-?(\d{6,})\b/i) ||
+    normalized.match(/\b(MLB)(\d{6,})\b/i);
+
+  if (genericMatch) {
+    return `MLB${genericMatch[2]}`;
+  }
+
+  return "";
+}
+
+function extractItemIdFromUrl(rawUrl: string) {
+  try {
+    const url = new URL(normalizeUrl(rawUrl));
+
+    const fromPath = extractItemIdFromText(url.pathname);
+
+    if (fromPath) return fromPath;
+
+    const wid = url.searchParams.get("wid");
+
+    if (wid) {
+      const fromWid = extractItemIdFromText(wid);
+
+      if (fromWid) return fromWid;
+    }
+
+    return extractItemIdFromText(rawUrl);
+  } catch {
+    return extractItemIdFromText(rawUrl);
+  }
+}
+
+async function fetchMercadoLivreApi(itemId: string) {
+  if (!itemId) return null;
+
+  const response = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+    },
+    cache: "no-store",
+  });
+
+  if (!response.ok) return null;
+
+  const item = (await response.json()) as MercadoLivreApiItem;
+
+  const priceFromSale = parseMoney(item.sale_price?.amount);
+  const regularFromSale = parseMoney(item.sale_price?.regular_amount);
+  const priceFromItem = parseMoney(item.price);
+  const priceFromVariation = parseMoney(item.variations?.[0]?.price);
+
+  const currentPrice = priceFromSale || priceFromItem || priceFromVariation;
+
+  const originalPrice = parseMoney(item.original_price);
+  const basePrice = parseMoney(item.base_price);
+
+  let oldPrice: number | null = null;
+
+  if (regularFromSale && currentPrice && regularFromSale > currentPrice) {
+    oldPrice = regularFromSale;
+  } else if (originalPrice && currentPrice && originalPrice > currentPrice) {
+    oldPrice = originalPrice;
+  } else if (basePrice && currentPrice && basePrice > currentPrice) {
+    oldPrice = basePrice;
+  }
+
+  const imageUrl =
+    fixImageUrl(item.pictures?.[0]?.secure_url) ||
+    fixImageUrl(item.pictures?.[0]?.url) ||
+    fixImageUrl(item.secure_thumbnail) ||
+    fixImageUrl(item.thumbnail);
+
+  const title = cleanText(item.title);
+
+  if (!title && !currentPrice && !imageUrl) {
+    return null;
+  }
+
+  return {
+    title: title || "Produto Mercado Livre",
+    price: formatBRL(currentPrice),
+    old_price: formatBRL(oldPrice),
+    image_url: imageUrl,
+    original_url: item.permalink || "",
+  };
+}
+
 function getMeta($: cheerio.CheerioAPI, names: string[]) {
   for (const name of names) {
     const value =
@@ -116,13 +249,13 @@ function findImage($: cheerio.CheerioAPI) {
     $("img.ui-pdp-gallery__figure__image").first().attr("src") ||
     "";
 
-  return image;
+  return fixImageUrl(image);
 }
 
 function findJsonLdProducts($: cheerio.CheerioAPI) {
-  const products: any[] = [];
+  const products: unknown[] = [];
 
-  function scan(value: any) {
+  function scan(value: unknown) {
     if (!value) return;
 
     if (Array.isArray(value)) {
@@ -131,7 +264,8 @@ function findJsonLdProducts($: cheerio.CheerioAPI) {
     }
 
     if (typeof value === "object") {
-      const type = value["@type"];
+      const objectValue = value as Record<string, unknown>;
+      const type = objectValue["@type"];
 
       if (
         type === "Product" ||
@@ -140,7 +274,7 @@ function findJsonLdProducts($: cheerio.CheerioAPI) {
         products.push(value);
       }
 
-      Object.values(value).forEach(scan);
+      Object.values(objectValue).forEach(scan);
     }
   }
 
@@ -163,9 +297,19 @@ function findPriceFromJsonLd($: cheerio.CheerioAPI) {
   const products = findJsonLdProducts($);
 
   for (const product of products) {
-    const offers = Array.isArray(product.offers)
-      ? product.offers[0]
-      : product.offers;
+    const productObject = product as {
+      offers?: {
+        price?: string | number;
+        lowPrice?: string | number;
+      } | Array<{
+        price?: string | number;
+        lowPrice?: string | number;
+      }>;
+    };
+
+    const offers = Array.isArray(productObject.offers)
+      ? productObject.offers[0]
+      : productObject.offers;
 
     const price = parseMoney(offers?.price || offers?.lowPrice);
 
@@ -195,9 +339,7 @@ function findNumberByKeys(html: string, keys: string[]) {
 }
 
 function findPrice($: cheerio.CheerioAPI, html: string) {
-  const metaPrice = parseMoney(
-    getMeta($, ["product:price:amount", "price"])
-  );
+  const metaPrice = parseMoney(getMeta($, ["product:price:amount", "price"]));
 
   if (metaPrice) return metaPrice;
 
@@ -212,12 +354,7 @@ function findPrice($: cheerio.CheerioAPI, html: string) {
 
   if (selectorPrice) return selectorPrice;
 
-  return findNumberByKeys(html, [
-    "price",
-    "current_price",
-    "amount",
-    "value",
-  ]);
+  return findNumberByKeys(html, ["price", "current_price", "amount", "value"]);
 }
 
 function findOldPrice(
@@ -230,15 +367,14 @@ function findOldPrice(
     moneyFromElement($, ".andes-money-amount--previous") ||
     moneyFromElement($, ".ui-pdp-price__original-value");
 
-  const scriptOldPrice =
-    findNumberByKeys(html, [
-      "original_price",
-      "previous_price",
-      "regular_price",
-      "list_price",
-      "base_price",
-      "strike_through_price",
-    ]);
+  const scriptOldPrice = findNumberByKeys(html, [
+    "original_price",
+    "previous_price",
+    "regular_price",
+    "list_price",
+    "base_price",
+    "strike_through_price",
+  ]);
 
   let oldPrice = selectorOldPrice || scriptOldPrice;
 
@@ -247,6 +383,40 @@ function findOldPrice(
   }
 
   return oldPrice;
+}
+
+async function fetchMercadoLivreHtml(url: string) {
+  const response = await fetch(url, {
+    redirect: "follow",
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    },
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const html = await response.text();
+  const $ = cheerio.load(html);
+
+  const title = findTitle($);
+  const imageUrl = findImage($);
+  const priceNumber = findPrice($, html);
+  const oldPriceNumber = findOldPrice($, html, priceNumber);
+
+  return {
+    title,
+    price: formatBRL(priceNumber),
+    old_price: formatBRL(oldPriceNumber),
+    image_url: imageUrl,
+    original_url: response.url || url,
+  };
 }
 
 export async function POST(request: Request) {
@@ -261,45 +431,41 @@ export async function POST(request: Request) {
       );
     }
 
-    const response = await fetch(url, {
-      redirect: "follow",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-      },
-    });
+    const itemId = extractItemIdFromUrl(url);
 
-    if (!response.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: `Mercado Livre respondeu com erro ${response.status}.`,
-        },
-        { status: 400 }
-      );
+    if (itemId) {
+      const apiData = await fetchMercadoLivreApi(itemId);
+
+      if (apiData) {
+        return NextResponse.json({
+          ok: true,
+          source: "api",
+          data: {
+            ...apiData,
+            original_url: apiData.original_url || url,
+          },
+        });
+      }
     }
 
-    const html = await response.text();
-    const $ = cheerio.load(html);
+    const htmlData = await fetchMercadoLivreHtml(url);
 
-    const title = findTitle($);
-    const imageUrl = findImage($);
-    const priceNumber = findPrice($, html);
-    const oldPriceNumber = findOldPrice($, html, priceNumber);
+    if (htmlData) {
+      return NextResponse.json({
+        ok: true,
+        source: "html",
+        data: htmlData,
+      });
+    }
 
-    return NextResponse.json({
-      ok: true,
-      data: {
-        title,
-        price: formatBRL(priceNumber),
-        old_price: formatBRL(oldPriceNumber),
-        image_url: imageUrl,
-        original_url: response.url || url,
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Não foi possível encontrar dados desse produto. Tente outro link direto do produto Mercado Livre.",
       },
-    });
+      { status: 400 }
+    );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Erro desconhecido.";
