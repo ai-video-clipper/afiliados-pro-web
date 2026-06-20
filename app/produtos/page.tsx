@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import { createClient } from "@/lib/supabase/client";
 
 type TelegramBot = {
@@ -34,6 +35,16 @@ type StoreSettings = {
   };
 };
 
+type ImportedProduct = {
+  title: string;
+  price: string;
+  oldPrice: string;
+  offerLink: string;
+  imageUrl: string;
+};
+
+type SpreadsheetRow = Record<string, unknown>;
+
 function generateShortCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
@@ -55,6 +66,229 @@ function normalizeUrl(value: string) {
   }
 
   return `https://${trimmed}`;
+}
+
+function normalizeColumnName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function valueToString(value: unknown) {
+  if (value === null || value === undefined) return "";
+
+  return String(value).trim();
+}
+
+function getColumnValue(row: SpreadsheetRow, aliases: string[]) {
+  const normalizedEntries = Object.entries(row).map(([key, value]) => ({
+    key,
+    normalizedKey: normalizeColumnName(key),
+    value,
+  }));
+
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeColumnName(alias);
+    const found = normalizedEntries.find(
+      (entry) => entry.normalizedKey === normalizedAlias
+    );
+
+    if (found) return valueToString(found.value);
+  }
+
+  return "";
+}
+
+function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
+  const commonTitleAliases = [
+    "title",
+    "titulo",
+    "título",
+    "nome",
+    "produto",
+    "product name",
+    "nome do produto",
+    "item name",
+    "product desc",
+  ];
+
+  const commonPriceAliases = [
+    "price",
+    "preco",
+    "preço",
+    "preco atual",
+    "preço atual",
+    "discount price",
+    "sale price",
+    "valor",
+  ];
+
+  const commonOldPriceAliases = [
+    "old price",
+    "preco antigo",
+    "preço antigo",
+    "original price",
+    "origin price",
+    "regular price",
+    "price before discount",
+  ];
+
+  const commonImageAliases = [
+    "image",
+    "imagem",
+    "image url",
+    "image_url",
+    "main image",
+    "url imagem",
+    "foto",
+  ];
+
+  const commonLinkAliases = [
+    "link",
+    "url",
+    "offer link",
+    "product link",
+    "promotion url",
+    "affiliate link",
+    "link afiliado",
+    "link da oferta",
+    "link produto",
+  ];
+
+  if (store === "shopee") {
+    return {
+      title: getColumnValue(row, [
+        "Item Name",
+        "Product Name",
+        "Nome do produto",
+        "Title",
+        ...commonTitleAliases,
+      ]),
+      price: getColumnValue(row, [
+        "Price",
+        "Sale Price",
+        "Preço",
+        "Preco",
+        ...commonPriceAliases,
+      ]),
+      oldPrice: getColumnValue(row, [
+        "Original Price",
+        "Price Before Discount",
+        "Preço antigo",
+        ...commonOldPriceAliases,
+      ]),
+      imageUrl: getColumnValue(row, [
+        "Image URL",
+        "Image Url",
+        "Image",
+        "Imagem",
+        ...commonImageAliases,
+      ]),
+      offerLink: getColumnValue(row, [
+        "Offer Link",
+        "Product Link",
+        "Affiliate Link",
+        "Link afiliado",
+        ...commonLinkAliases,
+      ]),
+    };
+  }
+
+  if (store === "aliexpress") {
+    return {
+      title: getColumnValue(row, [
+        "Product Desc",
+        "Product Name",
+        "Product Title",
+        "Title",
+        ...commonTitleAliases,
+      ]),
+      price: getColumnValue(row, [
+        "Discount Price",
+        "Sale Price",
+        "Price",
+        "Preço",
+        ...commonPriceAliases,
+      ]),
+      oldPrice: getColumnValue(row, [
+        "Origin Price",
+        "Original Price",
+        "Regular Price",
+        "Preço antigo",
+        ...commonOldPriceAliases,
+      ]),
+      imageUrl: getColumnValue(row, [
+        "Image Url",
+        "Image URL",
+        "Image",
+        "Imagem",
+        ...commonImageAliases,
+      ]),
+      offerLink: getColumnValue(row, [
+        "Promotion Url",
+        "Promotion URL",
+        "Affiliate Link",
+        "Product Url",
+        "Product URL",
+        "Link afiliado",
+        ...commonLinkAliases,
+      ]),
+    };
+  }
+
+  if (store === "mercado_livre") {
+    return {
+      title: getColumnValue(row, [
+        "title",
+        "titulo",
+        "título",
+        "nome",
+        "produto",
+        "Product Name",
+        ...commonTitleAliases,
+      ]),
+      price: getColumnValue(row, [
+        "price",
+        "preco",
+        "preço",
+        "Preço atual",
+        ...commonPriceAliases,
+      ]),
+      oldPrice: getColumnValue(row, [
+        "old_price",
+        "old price",
+        "preco_antigo",
+        "preço antigo",
+        "Original Price",
+        ...commonOldPriceAliases,
+      ]),
+      imageUrl: getColumnValue(row, [
+        "image_url",
+        "image",
+        "imagem",
+        "Image URL",
+        ...commonImageAliases,
+      ]),
+      offerLink: getColumnValue(row, [
+        "link",
+        "url",
+        "link_produto",
+        "Product Link",
+        "offer_link",
+        ...commonLinkAliases,
+      ]),
+    };
+  }
+
+  return {
+    title: getColumnValue(row, commonTitleAliases),
+    price: getColumnValue(row, commonPriceAliases),
+    oldPrice: getColumnValue(row, commonOldPriceAliases),
+    imageUrl: getColumnValue(row, commonImageAliases),
+    offerLink: getColumnValue(row, commonLinkAliases),
+  };
 }
 
 function applyMercadoLivreTag(rawUrl: string, tag: string) {
@@ -101,6 +335,10 @@ export default function ProdutosPage() {
   const [imageUrl, setImageUrl] = useState("");
   const [channelId, setChannelId] = useState("");
   const [store, setStore] = useState("manual");
+
+  const [importStore, setImportStore] = useState("shopee");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const [message, setMessage] = useState("Carregando...");
   const [extracting, setExtracting] = useState(false);
@@ -352,6 +590,138 @@ export default function ProdutosPage() {
     }
   }
 
+  async function importSpreadsheetProducts() {
+    if (!userId) return;
+
+    if (!channelId) {
+      setMessage("Cadastre ou selecione um canal antes de importar.");
+      return;
+    }
+
+    if (!importFile) {
+      setMessage("Selecione uma planilha CSV/XLS/XLSX.");
+      return;
+    }
+
+    if (importStore === "mercado_livre" && !mlTag.trim()) {
+      setMessage("Configure sua tag do Mercado Livre na aba Lojas.");
+      return;
+    }
+
+    try {
+      setImporting(true);
+      setMessage("Lendo planilha...");
+
+      const buffer = await importFile.arrayBuffer();
+      const workbook = XLSX.read(buffer, {
+        type: "array",
+      });
+
+      const firstSheetName = workbook.SheetNames[0];
+
+      if (!firstSheetName) {
+        setMessage("A planilha não possui abas.");
+        return;
+      }
+
+      const worksheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json<SpreadsheetRow>(worksheet, {
+        defval: "",
+      });
+
+      if (rows.length === 0) {
+        setMessage("Nenhum produto encontrado na planilha.");
+        return;
+      }
+
+      setMessage(`Importando ${rows.length} linhas...`);
+
+      const importedProducts: Product[] = [];
+      let importedCount = 0;
+      let skippedCount = 0;
+
+      for (const row of rows) {
+        const mapped = mapImportedRow(row, importStore);
+
+        if (!mapped.title || !mapped.offerLink) {
+          skippedCount++;
+          continue;
+        }
+
+        let finalOfferLink = normalizeUrl(mapped.offerLink);
+        const originalLink = normalizeUrl(mapped.offerLink);
+        let finalLink = normalizeUrl(mapped.offerLink);
+        let shortCode: string | null = null;
+        let shortLinkId: string | null = null;
+
+        if (importStore === "mercado_livre") {
+          finalLink = applyMercadoLivreTag(mapped.offerLink, mlTag.trim());
+
+          const shortLink = await createShortLink(finalLink);
+
+          shortCode = shortLink.code;
+          shortLinkId = shortLink.id;
+          finalOfferLink = `${window.location.origin}/m/${shortLink.code}`;
+        }
+
+        const { data, error } = await supabase
+          .from("products")
+          .insert({
+            user_id: userId,
+            channel_id: channelId,
+            title: mapped.title,
+            price: mapped.price || null,
+            old_price: mapped.oldPrice || null,
+            offer_link: finalOfferLink,
+            image_url: mapped.imageUrl || null,
+            store: importStore,
+            original_link: originalLink,
+            final_link: finalLink,
+            short_code: shortCode,
+          })
+          .select(
+            "id, title, price, old_price, offer_link, image_url, status, channel_id, store, original_link, final_link, short_code"
+          )
+          .single();
+
+        if (error) {
+          if (shortLinkId) {
+            await supabase.from("short_links").delete().eq("id", shortLinkId);
+          }
+
+          skippedCount++;
+          continue;
+        }
+
+        if (shortLinkId) {
+          await supabase
+            .from("short_links")
+            .update({
+              product_id: data.id,
+            })
+            .eq("id", shortLinkId);
+        }
+
+        importedProducts.push(data);
+        importedCount++;
+      }
+
+      setProducts([...importedProducts, ...products]);
+      setImportFile(null);
+
+      setMessage(
+        `Importação concluída. Importados: ${importedCount}. Ignorados: ${skippedCount}.`
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido.";
+
+      setMessage(`Erro ao importar planilha: ${errorMessage}`);
+    } finally {
+      setImporting(false);
+    }
+  }
+
   async function sendProduct(product: Product) {
     if (!bot?.bot_token) {
       setMessage("Configure o bot primeiro.");
@@ -441,9 +811,58 @@ export default function ProdutosPage() {
         <h1 className="text-3xl font-bold">Produtos</h1>
 
         <p className="mt-2 text-slate-300">
-          Cadastre uma oferta, busque dados do Mercado Livre e envie para o
-          Telegram.
+          Cadastre ofertas, importe planilhas e envie para o Telegram.
         </p>
+
+        <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-950 p-6">
+          <h2 className="text-xl font-bold">Importar planilha</h2>
+
+          <p className="mt-2 text-sm text-slate-400">
+            Use CSV, XLS ou XLSX. Shopee e AliExpress usam os links afiliados da
+            própria planilha. Mercado Livre aplica sua tag e gera link curto.
+          </p>
+
+          <div className="mt-5 grid gap-4 md:grid-cols-3">
+            <select
+              value={importStore}
+              onChange={(event) => setImportStore(event.target.value)}
+              className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-blue-500"
+            >
+              <option value="shopee">Shopee</option>
+              <option value="aliexpress">AliExpress</option>
+              <option value="mercado_livre">Mercado Livre</option>
+            </select>
+
+            <select
+              value={channelId}
+              onChange={(event) => setChannelId(event.target.value)}
+              className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-blue-500"
+            >
+              {channels.map((channel) => (
+                <option key={channel.id} value={channel.id}>
+                  {channel.name}
+                </option>
+              ))}
+            </select>
+
+            <input
+              type="file"
+              accept=".csv,.xls,.xlsx"
+              onChange={(event) =>
+                setImportFile(event.target.files?.[0] || null)
+              }
+              className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <button
+            onClick={importSpreadsheetProducts}
+            disabled={importing}
+            className="mt-5 rounded-xl bg-purple-600 px-5 py-3 font-semibold hover:bg-purple-500 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {importing ? "Importando..." : "Importar produtos"}
+          </button>
+        </div>
 
         <div className="mt-8 grid gap-4 md:grid-cols-2">
           <input
@@ -517,9 +936,8 @@ export default function ProdutosPage() {
 
         {store === "mercado_livre" && (
           <div className="mt-4 rounded-xl border border-blue-900 bg-blue-950/40 p-4 text-sm text-blue-100">
-            Mercado Livre ativo: o sistema busca nome, preço, preço antigo
-            quando existir, imagem, aplica sua tag, limpa o link e gera um link
-            curto no formato <strong>/m/CODIGO</strong>.
+            Mercado Livre ativo: o sistema aplica sua tag, limpa o link e gera
+            um link curto no formato <strong>/m/CODIGO</strong>.
           </div>
         )}
 
