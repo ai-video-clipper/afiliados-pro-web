@@ -84,7 +84,6 @@ function valueToString(value: unknown) {
 
 function getColumnValue(row: SpreadsheetRow, aliases: string[]) {
   const normalizedEntries = Object.entries(row).map(([key, value]) => ({
-    key,
     normalizedKey: normalizeColumnName(key),
     value,
   }));
@@ -101,6 +100,59 @@ function getColumnValue(row: SpreadsheetRow, aliases: string[]) {
   return "";
 }
 
+function extractFirstUrlFromText(value: string) {
+  const text = valueToString(value);
+
+  if (!text) return "";
+
+  const urls = text.match(/https?:\/\/[^\s"',;<>]+/gi);
+
+  if (!urls || urls.length === 0) return "";
+
+  return urls[0].trim();
+}
+
+function extractFirstImageUrlFromText(value: string) {
+  const text = valueToString(value);
+
+  if (!text) return "";
+
+  const urls = text.match(/https?:\/\/[^\s"',;<>]+/gi);
+
+  if (!urls || urls.length === 0) return "";
+
+  const imageUrl =
+    urls.find((url) =>
+      /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(url.trim())
+    ) ||
+    urls.find((url) =>
+      /image|img|photo|picture|thumbnail|shopee|alicdn|mlstatic/i.test(url)
+    ) ||
+    "";
+
+  return imageUrl.trim();
+}
+
+function getFirstImageUrlFromRow(row: SpreadsheetRow) {
+  for (const value of Object.values(row)) {
+    const imageUrl = extractFirstImageUrlFromText(valueToString(value));
+
+    if (imageUrl) return imageUrl;
+  }
+
+  return "";
+}
+
+function getFirstUrlFromRow(row: SpreadsheetRow) {
+  for (const value of Object.values(row)) {
+    const url = extractFirstUrlFromText(valueToString(value));
+
+    if (url) return url;
+  }
+
+  return "";
+}
+
 function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
   const commonTitleAliases = [
     "title",
@@ -111,7 +163,12 @@ function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
     "product name",
     "nome do produto",
     "item name",
+    "item title",
+    "product title",
     "product desc",
+    "description",
+    "descricao",
+    "descrição",
   ];
 
   const commonPriceAliases = [
@@ -123,6 +180,9 @@ function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
     "discount price",
     "sale price",
     "valor",
+    "final price",
+    "price after discount",
+    "current price",
   ];
 
   const commonOldPriceAliases = [
@@ -133,6 +193,8 @@ function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
     "origin price",
     "regular price",
     "price before discount",
+    "normal price",
+    "list price",
   ];
 
   const commonImageAliases = [
@@ -141,8 +203,27 @@ function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
     "image url",
     "image_url",
     "main image",
+    "main image url",
     "url imagem",
     "foto",
+    "photo",
+    "picture",
+    "thumbnail",
+    "thumbnail url",
+    "cover image",
+    "cover image url",
+    "product image",
+    "product image url",
+    "item image",
+    "item image url",
+    "item picture",
+    "item picture url",
+    "image link",
+    "img",
+    "img url",
+    "picture url",
+    "product thumbnail",
+    "product thumbnail url",
   ];
 
   const commonLinkAliases = [
@@ -155,44 +236,85 @@ function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
     "link afiliado",
     "link da oferta",
     "link produto",
+    "product url",
+    "item url",
+    "item link",
   ];
 
   if (store === "shopee") {
-    return {
-      title: getColumnValue(row, [
-        "Item Name",
-        "Product Name",
-        "Nome do produto",
-        "Title",
-        ...commonTitleAliases,
-      ]),
-      price: getColumnValue(row, [
-        "Price",
-        "Sale Price",
-        "Preço",
-        "Preco",
-        ...commonPriceAliases,
-      ]),
-      oldPrice: getColumnValue(row, [
-        "Original Price",
-        "Price Before Discount",
-        "Preço antigo",
-        ...commonOldPriceAliases,
-      ]),
-      imageUrl: getColumnValue(row, [
+    const title = getColumnValue(row, [
+      "Item Name",
+      "Product Name",
+      "Product Title",
+      "Item Title",
+      "Nome do produto",
+      "Nome Produto",
+      "Title",
+      ...commonTitleAliases,
+    ]);
+
+    const price = getColumnValue(row, [
+      "Price",
+      "Sale Price",
+      "Discount Price",
+      "Current Price",
+      "Preço",
+      "Preco",
+      "Preço atual",
+      ...commonPriceAliases,
+    ]);
+
+    const oldPrice = getColumnValue(row, [
+      "Original Price",
+      "Price Before Discount",
+      "Regular Price",
+      "Preço antigo",
+      ...commonOldPriceAliases,
+    ]);
+
+    const imageUrl =
+      getColumnValue(row, [
         "Image URL",
         "Image Url",
         "Image",
         "Imagem",
+        "Main Image",
+        "Main Image URL",
+        "Product Image",
+        "Product Image URL",
+        "Item Image",
+        "Item Image URL",
+        "Item Picture",
+        "Item Picture URL",
+        "Cover Image",
+        "Cover Image URL",
+        "Thumbnail",
+        "Thumbnail URL",
+        "Product Thumbnail",
+        "Image Link",
+        "Picture URL",
         ...commonImageAliases,
-      ]),
-      offerLink: getColumnValue(row, [
+      ]) || getFirstImageUrlFromRow(row);
+
+    const offerLink =
+      getColumnValue(row, [
         "Offer Link",
         "Product Link",
+        "Product URL",
         "Affiliate Link",
+        "Promotion URL",
         "Link afiliado",
+        "Item URL",
+        "Item Link",
         ...commonLinkAliases,
-      ]),
+      ]) || getFirstUrlFromRow(row);
+
+    return {
+      title,
+      price,
+      oldPrice,
+      imageUrl,
+      offerLink,
     };
   }
 
@@ -219,22 +341,24 @@ function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
         "Preço antigo",
         ...commonOldPriceAliases,
       ]),
-      imageUrl: getColumnValue(row, [
-        "Image Url",
-        "Image URL",
-        "Image",
-        "Imagem",
-        ...commonImageAliases,
-      ]),
-      offerLink: getColumnValue(row, [
-        "Promotion Url",
-        "Promotion URL",
-        "Affiliate Link",
-        "Product Url",
-        "Product URL",
-        "Link afiliado",
-        ...commonLinkAliases,
-      ]),
+      imageUrl:
+        getColumnValue(row, [
+          "Image Url",
+          "Image URL",
+          "Image",
+          "Imagem",
+          ...commonImageAliases,
+        ]) || getFirstImageUrlFromRow(row),
+      offerLink:
+        getColumnValue(row, [
+          "Promotion Url",
+          "Promotion URL",
+          "Affiliate Link",
+          "Product Url",
+          "Product URL",
+          "Link afiliado",
+          ...commonLinkAliases,
+        ]) || getFirstUrlFromRow(row),
     };
   }
 
@@ -264,21 +388,23 @@ function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
         "Original Price",
         ...commonOldPriceAliases,
       ]),
-      imageUrl: getColumnValue(row, [
-        "image_url",
-        "image",
-        "imagem",
-        "Image URL",
-        ...commonImageAliases,
-      ]),
-      offerLink: getColumnValue(row, [
-        "link",
-        "url",
-        "link_produto",
-        "Product Link",
-        "offer_link",
-        ...commonLinkAliases,
-      ]),
+      imageUrl:
+        getColumnValue(row, [
+          "image_url",
+          "image",
+          "imagem",
+          "Image URL",
+          ...commonImageAliases,
+        ]) || getFirstImageUrlFromRow(row),
+      offerLink:
+        getColumnValue(row, [
+          "link",
+          "url",
+          "link_produto",
+          "Product Link",
+          "offer_link",
+          ...commonLinkAliases,
+        ]) || getFirstUrlFromRow(row),
     };
   }
 
@@ -286,8 +412,8 @@ function mapImportedRow(row: SpreadsheetRow, store: string): ImportedProduct {
     title: getColumnValue(row, commonTitleAliases),
     price: getColumnValue(row, commonPriceAliases),
     oldPrice: getColumnValue(row, commonOldPriceAliases),
-    imageUrl: getColumnValue(row, commonImageAliases),
-    offerLink: getColumnValue(row, commonLinkAliases),
+    imageUrl: getColumnValue(row, commonImageAliases) || getFirstImageUrlFromRow(row),
+    offerLink: getColumnValue(row, commonLinkAliases) || getFirstUrlFromRow(row),
   };
 }
 
@@ -444,6 +570,28 @@ export default function ProdutosPage() {
     }
 
     throw new Error("Não foi possível gerar o link curto. Tente novamente.");
+  }
+
+  async function fetchShopeeImage(productUrl: string) {
+    try {
+      const response = await fetch("/api/shopee/extract", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: productUrl,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!result.ok) return "";
+
+      return result.data?.image_url || "";
+    } catch {
+      return "";
+    }
   }
 
   async function extractMercadoLivreData() {
@@ -637,15 +785,40 @@ export default function ProdutosPage() {
       setMessage(`Importando ${rows.length} linhas...`);
 
       const importedProducts: Product[] = [];
+      const shopeeImageCache = new Map<string, string>();
+
       let importedCount = 0;
       let skippedCount = 0;
+      let imagesFoundCount = 0;
 
-      for (const row of rows) {
+      for (let index = 0; index < rows.length; index++) {
+        const row = rows[index];
         const mapped = mapImportedRow(row, importStore);
 
         if (!mapped.title || !mapped.offerLink) {
           skippedCount++;
           continue;
+        }
+
+        let importedImageUrl = mapped.imageUrl;
+
+        if (importStore === "shopee" && !importedImageUrl) {
+          const normalizedShopeeLink = normalizeUrl(mapped.offerLink);
+
+          if (shopeeImageCache.has(normalizedShopeeLink)) {
+            importedImageUrl = shopeeImageCache.get(normalizedShopeeLink) || "";
+          } else {
+            setMessage(
+              `Buscando imagem Shopee ${index + 1} de ${rows.length}...`
+            );
+
+            importedImageUrl = await fetchShopeeImage(normalizedShopeeLink);
+            shopeeImageCache.set(normalizedShopeeLink, importedImageUrl);
+
+            if (importedImageUrl) {
+              imagesFoundCount++;
+            }
+          }
         }
 
         let finalOfferLink = normalizeUrl(mapped.offerLink);
@@ -673,7 +846,7 @@ export default function ProdutosPage() {
             price: mapped.price || null,
             old_price: mapped.oldPrice || null,
             offer_link: finalOfferLink,
-            image_url: mapped.imageUrl || null,
+            image_url: importedImageUrl || null,
             store: importStore,
             original_link: originalLink,
             final_link: finalLink,
@@ -709,9 +882,15 @@ export default function ProdutosPage() {
       setProducts([...importedProducts, ...products]);
       setImportFile(null);
 
-      setMessage(
-        `Importação concluída. Importados: ${importedCount}. Ignorados: ${skippedCount}.`
-      );
+      if (importStore === "shopee") {
+        setMessage(
+          `Importação concluída. Importados: ${importedCount}. Imagens Shopee encontradas: ${imagesFoundCount}. Ignorados: ${skippedCount}.`
+        );
+      } else {
+        setMessage(
+          `Importação concluída. Importados: ${importedCount}. Ignorados: ${skippedCount}.`
+        );
+      }
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Erro desconhecido.";
@@ -818,8 +997,8 @@ export default function ProdutosPage() {
           <h2 className="text-xl font-bold">Importar planilha</h2>
 
           <p className="mt-2 text-sm text-slate-400">
-            Use CSV, XLS ou XLSX. Shopee e AliExpress usam os links afiliados da
-            própria planilha. Mercado Livre aplica sua tag e gera link curto.
+            Use CSV, XLS ou XLSX. Na Shopee, se a planilha não tiver imagem, o
+            sistema tenta buscar a imagem pelo link do produto.
           </p>
 
           <div className="mt-5 grid gap-4 md:grid-cols-3">
